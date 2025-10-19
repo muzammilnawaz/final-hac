@@ -1,22 +1,20 @@
 import express from 'express';
 import streamifier from 'streamifier';
-import { protect } from '../middleware/middleware.js'; // Sahi path
+import { protect } from '../middleware/middleware.js'; // Verify path
 import upload from '../config/multer.js';
 import cloudinary from '../config/cloudinary.js';
 import { analyzeMedicalReport } from '../utils/geminiHelper.js';
-import Report from '../model/reportModel.js'; // Sahi path
+import Report from '../model/reportModel.js'; // Verify path
 
 const router = express.Router();
 
 // POST /api/v1/reports/upload
 router.post('/upload', protect, upload.single('reportFile'), async (req, res, next) => {
     if (!req.file) {
-      // file na hone pe error
-      res.status(400);
-      return next(new Error('Please upload a file.'));
+      const err = new Error('Please upload a file.');
+      err.status = 400;
+      return next(err);
     }
-
-    // req.body se reportName aur memberId nikalein
     const { reportName, memberId } = req.body;
 
     try {
@@ -30,10 +28,7 @@ router.post('/upload', protect, upload.single('reportFile'), async (req, res, ne
           const { secure_url, public_id } = result;
 
           try {
-            // 2. Gemini se analyze karo
             const aiData = await analyzeMedicalReport(req.file.buffer, req.file.mimetype);
-            
-            // 3. Database mein save karo
             const report = new Report({
               user: req.user._id,
               reportName: reportName || 'Untitled Report',
@@ -44,14 +39,11 @@ router.post('/upload', protect, upload.single('reportFile'), async (req, res, ne
               doctorQuestions: aiData.doctorQuestions,
               foodSuggestions: aiData.foodSuggestions,
               remedies: aiData.remedies,
-              member: memberId, // YAHAN MEMBERID ADD HUA HAI
+              member: memberId || undefined,
             });
-
             const createdReport = await report.save();
             res.status(201).json(createdReport);
-
           } catch (aiError) {
-             // Agar AI fail ho tou bhi file upload ho chuki hai, usay delete karein
              await cloudinary.uploader.destroy(public_id);
              console.error('AI Error:', aiError);
              next(new Error('AI analysis failed. Please try again.'));
@@ -59,27 +51,17 @@ router.post('/upload', protect, upload.single('reportFile'), async (req, res, ne
         }
       );
       streamifier.createReadStream(req.file.buffer).pipe(uploadStream);
-
     } catch (err) {
-      next(err); // Error ko central handler ko bhejein
+      next(err);
     }
-  }
-);
+});
 
-// GET /api/v1/reports (Filter by member)
-router.get('/', protect, async (req, res, next) => {
+// GET /api/v1/reports (Get all reports, filtered)
+router.get('/', protect, async (req, res, next) => { // Path is '/'
   try {
     const filter = { user: req.user._id };
-
-    // Agar query mein memberId hai, tou sirf us member ke reports bhejein
-    if (req.query.memberId) {
-      filter.member = req.query.memberId;
-    }
-    // Agar ?self=true hai, tou woh reports jinka koi member nahi (user ke apne)
-    if (req.query.self === 'true') {
-        filter.member = { $exists: false };
-    }
-
+    if (req.query.memberId) filter.member = req.query.memberId;
+    if (req.query.self === 'true') filter.member = { $exists: false };
     const reports = await Report.find(filter).sort({ createdAt: -1 });
     res.json(reports);
   } catch (error) {
@@ -87,15 +69,16 @@ router.get('/', protect, async (req, res, next) => {
   }
 });
 
-// GET /api/v1/reports/:id (Single report)
-router.get('/:id', protect, async (req, res, next) => {
+// GET /api/v1/reports/:id (Get single report)
+router.get('/:id', protect, async (req, res, next) => { // Path is '/:id'
   try {
     const report = await Report.findOne({ _id: req.params.id, user: req.user._id });
     if (report) {
       res.json(report);
     } else {
-      res.status(404);
-      throw new Error('Report not found');
+      const err = new Error('Report not found');
+      err.status = 404;
+      next(err);
     }
   } catch (error) {
     next(error);
@@ -103,26 +86,20 @@ router.get('/:id', protect, async (req, res, next) => {
 });
 
 // DELETE /api/v1/reports/:id (Delete report)
-router.delete('/:id', protect, async (req, res, next) => {
+router.delete('/:id', protect, async (req, res, next) => { // Path is '/:id'
     try {
         const report = await Report.findOne({ _id: req.params.id, user: req.user._id });
-
         if (!report) {
-            res.status(404);
-            throw new Error('Report not found');
+            const err = new Error('Report not found');
+            err.status = 404;
+            return next(err);
         }
-
-        // 1. Cloudinary se file delete karein
         await cloudinary.uploader.destroy(report.filePublicId);
-        
-        // 2. Database se report delete karein
         await report.deleteOne();
-
         res.json({ message: 'Report removed' });
     } catch (error) {
         next(error);
     }
 });
-
 
 export default router;
